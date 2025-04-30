@@ -200,3 +200,56 @@
   )
 )
 
+;; AI-enhanced claim resolution function
+;; This function processes claims using both AI risk assessment and community voting
+(define-public (resolve-claim (claim-id uint))
+  (let
+    (
+      (claim (unwrap! (get-claim claim-id) (err ERR_CLAIM_NOT_FOUND)))
+      (policy (unwrap! (get-policy (get policy-id claim)) (err ERR_INVALID_POLICY)))
+      (votes-for (get votes-for claim))
+      (votes-against (get votes-against claim))
+      (ai-risk-score (get ai-risk-assessment claim))
+      (voting-weight u70)
+      (ai-weight u30)
+      (approval-threshold u60)
+      (voting-score (if (> (+ votes-for votes-against) u0)
+                       (/ (* votes-for u100) (+ votes-for votes-against))
+                       u0))
+      (inverse-risk-score (- u100 ai-risk-score))
+      (combined-score (/ (+ (* voting-score voting-weight) 
+                           (* inverse-risk-score ai-weight)) 
+                        u100))
+      (is-approved (>= combined-score approval-threshold))
+    )
+    
+    ;; Ensure voting period has ended
+    (asserts! (>= block-height (get voting-end-time claim)) (err ERR_VOTING_CLOSED))
+    ;; Ensure claim is still pending
+    (asserts! (is-eq (get status claim) STATUS_PENDING) (err ERR_UNAUTHORIZED))
+    
+    ;; Update claim status based on combined score
+    (map-set claims
+      { claim-id: claim-id }
+      (merge claim { status: (if is-approved STATUS_APPROVED STATUS_REJECTED) })
+    )
+    
+    ;; If approved, transfer funds to claimant
+    (if is-approved
+      (begin
+        ;; Deactivate policy if full coverage is claimed
+        (if (is-eq (get amount claim) (get coverage policy))
+          (map-set policies
+            { policy-id: (get policy-id claim) }
+            (merge policy { is-active: false })
+          )
+          true
+        )
+        ;; Transfer claim amount to claimant
+        (try! (as-contract (stx-transfer? (get amount claim) tx-sender (get claimant claim))))
+        (ok is-approved)
+      )
+      (ok is-approved)
+    )
+  )
+)
